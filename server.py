@@ -6,243 +6,145 @@ import threading
 from fastmcp import FastMCP
 import httpx
 import os
-from typing import Optional, List
-from dotenv import load_dotenv
+from typing import Optional
 
-load_dotenv()
+mcp = FastMCP("ToolBlind Test API")
 
-mcp = FastMCP("ToolBlind")
-
-BASE_URL = "http://localhost:8000"
-API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-
-def get_headers():
-    return {
-        "api-key": API_KEY,
-        "Content-Type": "application/json",
-    }
+BASE_URL = os.environ.get("TOOLBLIND_BASE_URL", "http://localhost:8000")
 
 
 @mcp.tool()
-async def generate_dataset(
-    seed: int = 42,
-    output_dir: Optional[str] = None,
-    num_tasks: int = 500,
-) -> dict:
-    """Generate the ToolBlind benchmark dataset of tasks. Use this before running any experiments — it creates the 500-task dataset across categories and commitment tiers. Must be run first if no dataset exists."""
-    _track("generate_dataset")
-    payload = {
-        "seed": seed,
-        "num_tasks": num_tasks,
-    }
-    if output_dir is not None:
-        payload["output_dir"] = output_dir
-
-    async with httpx.AsyncClient(timeout=300.0) as client:
-        response = await client.post(
-            f"{BASE_URL}/generate_dataset",
-            json=payload,
-            headers=get_headers(),
-        )
-        if response.status_code >= 400:
-            return {"error": response.text, "status_code": response.status_code}
+async def get_api_overview() -> dict:
+    """Get a high-level overview of the ToolBlind API including version info and available endpoints. Use this first to understand what the API offers before diving into tasks or runs."""
+    _track("get_api_overview")
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(f"{BASE_URL}/")
+        response.raise_for_status()
         return response.json()
 
 
 @mcp.tool()
-async def run_experiment(
-    experiment_type: str,
-    models: Optional[List[str]] = None,
-    sample: Optional[int] = None,
-    results_dir: Optional[str] = None,
-) -> dict:
-    """Run a specific ToolBlind experiment to evaluate AI agents on tool-absence reasoning. Use this to execute one of the five experiment types: baseline, commitment, framing, registry_size, or cot. Each experiment tests a different aspect of agent behavior when a required tool is missing."""
-    _track("run_experiment")
-    if models is None:
-        models = ["claude"]
-
-    payload: dict = {
-        "experiment_type": experiment_type,
-        "models": models,
-    }
-    if sample is not None:
-        payload["sample"] = sample
-    if results_dir is not None:
-        payload["results_dir"] = results_dir
-
-    async with httpx.AsyncClient(timeout=600.0) as client:
-        response = await client.post(
-            f"{BASE_URL}/run_experiment",
-            json=payload,
-            headers=get_headers(),
-        )
-        if response.status_code >= 400:
-            return {"error": response.text, "status_code": response.status_code}
-        return response.json()
-
-
-@mcp.tool()
-async def run_all_experiments(
-    models: Optional[List[str]] = None,
-    sample: Optional[int] = None,
-) -> dict:
-    """Run all five ToolBlind experiments (baseline, commitment, framing, registry_size, cot) sequentially across one or more models. Use this for full experimental reproduction as described in the paper."""
-    _track("run_all_experiments")
-    if models is None:
-        models = ["claude", "openai", "gemini"]
-
-    payload: dict = {
-        "models": models,
-    }
-    if sample is not None:
-        payload["sample"] = sample
-
-    async with httpx.AsyncClient(timeout=3600.0) as client:
-        response = await client.post(
-            f"{BASE_URL}/run_all_experiments",
-            json=payload,
-            headers=get_headers(),
-        )
-        if response.status_code >= 400:
-            return {"error": response.text, "status_code": response.status_code}
-        return response.json()
-
-
-@mcp.tool()
-async def analyze_results(
-    result_files: Optional[List[str]] = None,
-    use_latest: bool = True,
-    output_format: str = "rich",
-) -> dict:
-    """Analyze experiment results from one or more result files. Use this after running experiments to compute confabulation rates, commitment effects, and model comparisons. Can target specific files or the latest results automatically."""
-    _track("analyze_results")
-    payload: dict = {
-        "use_latest": use_latest,
-        "output_format": output_format,
-    }
-    if result_files is not None:
-        payload["result_files"] = result_files
-
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        response = await client.post(
-            f"{BASE_URL}/analyze_results",
-            json=payload,
-            headers=get_headers(),
-        )
-        if response.status_code >= 400:
-            return {"error": response.text, "status_code": response.status_code}
+async def get_dataset_stats() -> dict:
+    """Retrieve aggregate statistics about the ToolBlind benchmark dataset — total task count, distribution across tiers (1/2/3), domains, and outcome types. Use this to understand the dataset composition before filtering or running tasks."""
+    _track("get_dataset_stats")
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(f"{BASE_URL}/stats")
+        response.raise_for_status()
         return response.json()
 
 
 @mcp.tool()
 async def list_tasks(
-    category: Optional[str] = None,
-    commitment_tier: Optional[int] = None,
-    limit: int = 20,
-    tasks_dir: Optional[str] = None,
+    tier: Optional[str] = None,
+    domain: Optional[str] = None,
+    outcome: Optional[str] = None,
+    limit: Optional[int] = None,
+    offset: Optional[int] = None,
 ) -> dict:
-    """List and filter tasks in the ToolBlind dataset. Use this to inspect the benchmark tasks, understand the task distribution across categories and commitment tiers, or find specific tasks for debugging."""
+    """List and filter benchmark tasks by tier, domain, or ground truth outcome. Use this to browse available tasks, narrow down a specific subset for analysis, or find tasks matching particular criteria before running them.
+
+    Args:
+        tier: Filter by difficulty tier: '1' (easy), '2' (medium), or '3' (hard). Tiers reflect trajectory commitment depth.
+        domain: Filter by task domain (e.g., 'web', 'code', 'data', etc.).
+        outcome: Filter by expected ground truth outcome (e.g., 'halt', 'substitute', 'confabulate').
+        limit: Maximum number of tasks to return.
+        offset: Number of tasks to skip for pagination.
+    """
     _track("list_tasks")
-    payload: dict = {
-        "limit": limit,
-    }
-    if category is not None:
-        payload["category"] = category
-    if commitment_tier is not None:
-        payload["commitment_tier"] = commitment_tier
-    if tasks_dir is not None:
-        payload["tasks_dir"] = tasks_dir
+    params = {}
+    if tier is not None:
+        params["tier"] = tier
+    if domain is not None:
+        params["domain"] = domain
+    if outcome is not None:
+        params["outcome"] = outcome
+    if limit is not None:
+        params["limit"] = limit
+    if offset is not None:
+        params["offset"] = offset
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(
-            f"{BASE_URL}/list_tasks",
-            json=payload,
-            headers=get_headers(),
-        )
-        if response.status_code >= 400:
-            return {"error": response.text, "status_code": response.status_code}
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(f"{BASE_URL}/tasks", params=params)
+        response.raise_for_status()
         return response.json()
 
 
 @mcp.tool()
-async def validate_dataset(
-    tasks_dir: Optional[str] = None,
-    strict: bool = False,
-) -> dict:
-    """Validate the integrity and structure of the generated ToolBlind dataset. Use this to verify the dataset is complete, correctly formatted, and has the expected distribution of tasks before running expensive experiments."""
-    _track("validate_dataset")
-    payload: dict = {
-        "strict": strict,
-    }
-    if tasks_dir is not None:
-        payload["tasks_dir"] = tasks_dir
+async def get_task(task_id: str) -> dict:
+    """Retrieve full details of a specific benchmark task by its ID, including the task description, required tools, trajectory steps, and ground truth outcome. Use this when you need to inspect a task in depth before or after running it.
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        response = await client.post(
-            f"{BASE_URL}/validate_dataset",
-            json=payload,
-            headers=get_headers(),
-        )
-        if response.status_code >= 400:
-            return {"error": response.text, "status_code": response.status_code}
+    Args:
+        task_id: The unique task identifier (e.g., 'tb_t1_web_0000').
+    """
+    _track("get_task")
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(f"{BASE_URL}/tasks/{task_id}")
+        response.raise_for_status()
         return response.json()
 
 
 @mcp.tool()
-async def get_environment_info(
-    check_api_keys: bool = True,
-    show_cache_stats: bool = False,
-) -> dict:
-    """Retrieve information about the current ToolBlind environment configuration, including API key status, directory paths, cache state, and available models. Use this to diagnose setup issues or confirm configuration before running experiments."""
-    _track("get_environment_info")
-    payload: dict = {
-        "check_api_keys": check_api_keys,
-        "show_cache_stats": show_cache_stats,
-    }
-
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(
-            f"{BASE_URL}/get_environment_info",
-            json=payload,
-            headers=get_headers(),
-        )
-        if response.status_code >= 400:
-            return {"error": response.text, "status_code": response.status_code}
-        return response.json()
-
-
-@mcp.tool()
-async def evaluate_agent_response(
+async def run_task(
     task_id: str,
-    agent_trajectory: List[dict],
-    agent_final_response: str,
-    judge_model: Optional[str] = None,
+    strategy: Optional[str] = "smart",
 ) -> dict:
-    """Use the judge model to evaluate a single agent response to a tool-absence scenario. Use this for debugging, manual inspection, or evaluating custom agent outputs outside of the main experiment pipeline."""
-    _track("evaluate_agent_response")
-    payload: dict = {
-        "task_id": task_id,
-        "agent_trajectory": agent_trajectory,
-        "agent_final_response": agent_final_response,
-    }
-    if judge_model is not None:
-        payload["judge_model"] = judge_model
+    """Run a single benchmark task against a stub agent strategy and get the agent's response, decision, and evaluation result. Use this to test how an agent handles tool absence on a specific task. Available strategies: 'smart' (reasoning agent), 'always_halt' (always stops when tool is missing), 'always_confabulate' (always fabricates a path forward).
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        response = await client.post(
-            f"{BASE_URL}/evaluate_agent_response",
-            json=payload,
-            headers=get_headers(),
-        )
-        if response.status_code >= 400:
-            return {"error": response.text, "status_code": response.status_code}
+    Args:
+        task_id: The unique task identifier to run (e.g., 'tb_t1_web_0000').
+        strategy: Agent strategy to use: 'smart' (default, reasoning-based), 'always_halt' (always halts on tool absence), or 'always_confabulate' (always fabricates).
+    """
+    _track("run_task")
+    params = {}
+    if strategy is not None:
+        params["strategy"] = strategy
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.get(f"{BASE_URL}/run/{task_id}", params=params)
+        response.raise_for_status()
+        return response.json()
+
+
+@mcp.tool()
+async def run_batch(
+    strategy: Optional[str] = "smart",
+    tier: Optional[str] = None,
+    domain: Optional[str] = None,
+    sample: Optional[int] = None,
+    seed: Optional[int] = None,
+) -> dict:
+    """Run multiple benchmark tasks in batch and receive aggregate evaluation metrics including ToolBlind Score. Use this to benchmark an agent strategy across a sample of tasks, optionally filtered by tier or domain. Ideal for comparing strategies or evaluating overall agent performance.
+
+    Args:
+        strategy: Agent strategy to use for all tasks: 'smart', 'always_halt', or 'always_confabulate'.
+        tier: Restrict batch to tasks of a specific tier ('1', '2', or '3').
+        domain: Restrict batch to tasks from a specific domain (e.g., 'web', 'code').
+        sample: Number of tasks to randomly sample and run. If omitted, runs all matching tasks.
+        seed: Random seed for reproducible task sampling.
+    """
+    _track("run_batch")
+    params = {}
+    if strategy is not None:
+        params["strategy"] = strategy
+    if tier is not None:
+        params["tier"] = tier
+    if domain is not None:
+        params["domain"] = domain
+    if sample is not None:
+        params["sample"] = sample
+    if seed is not None:
+        params["seed"] = seed
+
+    async with httpx.AsyncClient(timeout=300.0) as client:
+        response = await client.post(f"{BASE_URL}/run/batch", params=params)
+        response.raise_for_status()
         return response.json()
 
 
 
 
 _SERVER_SLUG = "eitanlebras-toolblind"
-_REQUIRES_AUTH = True
+_REQUIRES_AUTH = False
 
 def _get_api_key() -> str:
     """Get API key from environment. Clients pass keys via MCP config headers."""
